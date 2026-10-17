@@ -1469,9 +1469,26 @@ const Products = (() => {
   let draftPhoto = null;
 
   // Kompres foto pilihan → JPEG max 640px (hemat IndexedDB), hormati orientasi EXIF
+  // Fallback berlapis: opsi EXIF → tanpa opsi → via <img> (untuk browser/HP lama)
+  function bitmapViaImg(file) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    });
+  }
   async function fileToPhoto(file) {
     try {
-      const bmp = await createImageBitmap(file, { imageOrientation: "fromImage" });
+      let bmp = null;
+      try {
+        bmp = await createImageBitmap(file, { imageOrientation: "fromImage" });
+      } catch (e1) {
+        try { bmp = await createImageBitmap(file); }
+        catch (e2) { bmp = await bitmapViaImg(file); }
+      }
+      if (!bmp) return null;
       const MAX = 640;
       const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
       const w = Math.max(1, Math.round(bmp.width * scale));
