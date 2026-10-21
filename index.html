@@ -410,6 +410,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13.5px;min-width:560px}
     <a href="#/produk" data-nav="produk"><span class="kic" data-icon="box"></span>Produk</a>
     <a href="#/transaksi" data-nav="transaksi"><span class="kic" data-icon="receipt"></span>Transaksi</a>
     <a href="#/laporan" data-nav="laporan"><span class="kic" data-icon="chartBar"></span>Laporan</a>
+    <a href="#/pengaturan" data-nav="pengaturan"><span class="kic" data-icon="gear"></span>Atur</a>
   </nav>
 </div>
 
@@ -1080,6 +1081,7 @@ const POS = (() => {
     const rows = items.map((it) => `
       <tr><td>${App.esc(it.productName)}<br><span style="color:#666">${it.qty} x ${App.rupiah(it.price)}</span></td>
       <td style="text-align:right">${App.rupiah(it.subtotal)}</td></tr>`).join("");
+    window.__lastReceipt = { tx, items, storeName, storeAddr, storePhone };
     App.openModal(`
       <div class="modal-head"><h3>Struk</h3><button class="modal-x" onclick="App.closeModal()">${icon('x', 16)}</button></div>
       <div class="modal-body">
@@ -1101,7 +1103,8 @@ const POS = (() => {
           <div class="c">Terima kasih<br>Barang yang sudah dibeli<br>tidak dapat ditukar</div>
         </div>
         <div style="margin-top:16px" class="no-print">
-          <button class="pay-btn" onclick="window.print()">Cetak Struk</button>
+          <button class="pay-btn" onclick="PrinterBT.printCurrentReceipt()">Cetak ke Printer Bluetooth</button>
+          <button class="pay-btn" style="margin-top:8px;background:#fff;color:#57534e;border:1.5px solid #d6d3d1;box-shadow:none" onclick="window.print()">Cetak PDF / Printer Sistem</button>
         </div>
       </div>`);
   }
@@ -1843,6 +1846,9 @@ const Transactions = (() => {
           <div class="trow"><span>Kembali</span><span class="num">${App.rupiah(tx.change)}</span></div>
           ${totalRefund ? `<div class="trow disc"><span>Total diretur</span><span class="num">−${App.rupiah(totalRefund)}</span></div>` : ""}
         </div>
+        <div class="row2" style="margin-top:12px">
+          <button class="btn btn-ghost" id="d-print" style="flex:1">Cetak Ulang Struk (Bluetooth)</button>
+        </div>
         ${tx.status === "COMPLETED" ? `
         <div class="field" style="margin-top:14px"><label>Alasan retur (opsional)</label>
           <input id="ret-reason" placeholder="cth: barang cacat"></div>
@@ -1852,6 +1858,8 @@ const Transactions = (() => {
         </div>` : ""}
       </div>`);
 
+    const bPrint = document.getElementById("d-print");
+    if (bPrint) bPrint.onclick = () => PrinterBT.printTx(tx.id);
     const bBatal = document.getElementById("d-batal");
     if (bBatal) bBatal.onclick = () => cancelTx(tx);
     const bRetur = document.getElementById("d-retur");
@@ -2718,6 +2726,7 @@ const Settings = (() => {
     const storeAddress = await DB.getSetting("storeAddress", "");
     const storePhone = await DB.getSetting("storePhone", "");
     const clientId = await DB.getSetting("googleClientId", "");
+    const paper = await DB.getSetting("printerPaper", "58");
     const prodCount = await DB.db.products.count();
     const txCount = await DB.db.transactions.count();
 
@@ -2746,6 +2755,26 @@ const Settings = (() => {
           <button class="btn btn-primary" id="b-export">${icon('download', 15)} Unduh Backup</button>
           <label class="btn btn-ghost" style="cursor:pointer">${icon('upload', 15)} Restore dari File
             <input type="file" id="b-import" accept=".json,application/json" style="display:none"></label>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px;max-width:640px">
+        <h3 style="margin-bottom:6px">Printer Bluetooth (Thermal)</h3>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+          Cetak struk langsung ke printer thermal Bluetooth dari aplikasi ini,
+          tanpa aplikasi tambahan. Nyalakan printer, ketuk <b>Hubungkan Printer</b>,
+          lalu pilih nama printermu. Setelah itu tombol <b>Cetak ke Printer Bluetooth</b>
+          di struk langsung mencetak ke printer ini.</p>
+        <div class="field"><label>Ukuran kertas</label>
+          <select id="p-paper" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:12px;font-size:14px;background:#fff">
+            <option value="58" ${paper === "58" ? "selected" : ""}>58mm (paling umum)</option>
+            <option value="80" ${paper === "80" ? "selected" : ""}>80mm</option>
+          </select></div>
+        <div id="p-status" style="font-size:13px;color:var(--muted);margin-bottom:12px">Memuat status printer…</div>
+        <div class="row2" style="margin:0">
+          <button class="btn btn-primary" id="p-connect">Hubungkan Printer</button>
+          <button class="btn btn-ghost" id="p-test">Tes Cetak</button>
+          <button class="btn btn-ghost" id="p-disconnect">Putuskan</button>
         </div>
       </div>
 
@@ -2815,6 +2844,19 @@ const Settings = (() => {
         App.toast("Restore dari Drive berhasil");
       } catch (e) { status(""); App.toast(e.message, false); }
     };
+    const pConn = document.getElementById("p-connect");
+    if (pConn) {
+      const pStatus = document.getElementById("p-status");
+      const paint = () => { if (pStatus) pStatus.textContent = PrinterBT.statusText(); };
+      paint();
+      pConn.onclick = async () => { await PrinterBT.connectWithToast(); paint(); };
+      document.getElementById("p-test").onclick = async () => { await PrinterBT.testPrint(); paint(); };
+      document.getElementById("p-disconnect").onclick = () => { PrinterBT.disconnect(); paint(); App.toast("Printer diputuskan"); };
+      document.getElementById("p-paper").onchange = async (e) => {
+        await DB.setSetting("printerPaper", e.target.value);
+        App.toast("Ukuran kertas disimpan: " + e.target.value + "mm");
+      };
+    }
   }
 
   async function renderWithBind() {
@@ -2824,6 +2866,249 @@ const Settings = (() => {
   }
   return { render: renderWithBind };
 })();
+
+</script>
+<script>
+/* KasirKu — Printer Bluetooth (Web Bluetooth + ESC/POS)
+ * Ditambahkan 2026-10-21 untuk Saung Ndeso: cetak struk langsung ke
+ * printer thermal BLE 58mm/80mm dari Chrome Android, tanpa aplikasi
+ * perantara. Modul ini TIDAK mengubah skema IndexedDB (kasirku_db v1),
+ * jadi data produk/transaksi yang sudah ada tetap aman.
+ */
+const PrinterBT = (() => {
+  const CANDIDATE_SERVICES = [
+    "000018f0-0000-1000-8000-00805f9b34fb", // layanan printer BLE umum
+    "0000ffe0-0000-1000-8000-00805f9b34fb", // modul serial BLE (HM-10)
+    "0000ff00-0000-1000-8000-00805f9b34fb", // varian serial BLE lain
+    "49535343-fe7d-4ae5-8fa9-9fafd205e455", // ISSC transparent UART
+    "e7810a71-73ae-499d-8c15-faa9aef0c3f2", // Microchip transparent UART
+    "0000ae30-0000-1000-8000-00805f9b34fb", // varian lain
+  ];
+  let device = null;
+  let characteristic = null;
+
+  const supported = () => !!navigator.bluetooth;
+  const savedName = () => localStorage.getItem("printerBtName") || "";
+  const savedId = () => localStorage.getItem("printerBtId") || "";
+
+  function statusText() {
+    if (!supported()) return "Browser ini tidak mendukung Web Bluetooth. Gunakan Chrome di Android.";
+    if (characteristic && device && device.gatt && device.gatt.connected)
+      return "Terhubung: " + (device.name || savedName() || "Printer");
+    if (savedName()) return "Printer tersimpan: " + savedName() + " — ketuk Hubungkan Printer untuk menyambung lagi.";
+    return "Belum ada printer terhubung.";
+  }
+
+  async function pickCharacteristic(dev) {
+    const server = await dev.gatt.connect();
+    let services = [];
+    try { services = await server.getPrimaryServices(); } catch (e) { services = []; }
+    for (const svc of services) {
+      let chars = [];
+      try { chars = await svc.getCharacteristics(); } catch (e) { continue; }
+      for (const c of chars) {
+        if (c.properties.write || c.properties.writeWithoutResponse) return c;
+      }
+    }
+    try {
+      const svc = await server.getPrimaryService(CANDIDATE_SERVICES[0]);
+      return await svc.getCharacteristic("00002af1-0000-1000-8000-00805f9b34fb");
+    } catch (e) { /* lanjut ke error di bawah */ }
+    throw new Error("Saluran tulis printer tidak ditemukan. Pastikan printer menyala dan mendukung Bluetooth BLE.");
+  }
+
+  async function connect() {
+    if (!supported()) throw new Error("Web Bluetooth tidak didukung. Buka aplikasi ini lewat Chrome di Android.");
+    if (!device && navigator.bluetooth.getDevices) {
+      try {
+        const devs = await navigator.bluetooth.getDevices();
+        device = devs.find((d) => d.id === savedId()) || devs.find((d) => d.name && d.name === savedName()) || null;
+      } catch (e) { device = null; }
+    }
+    if (!device) {
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: CANDIDATE_SERVICES,
+      });
+    }
+    if (!device) throw new Error("Tidak ada printer yang dipilih.");
+    device.addEventListener("gattserverdisconnected", () => { characteristic = null; });
+    characteristic = await pickCharacteristic(device);
+    try {
+      localStorage.setItem("printerBtId", device.id || "");
+      localStorage.setItem("printerBtName", device.name || "");
+    } catch (e) { /* abaikan */ }
+    return device;
+  }
+
+  async function ensure() {
+    if (characteristic && device && device.gatt && device.gatt.connected) return;
+    await connect();
+  }
+
+  function disconnect() {
+    try { if (device && device.gatt && device.gatt.connected) device.gatt.disconnect(); } catch (e) { /* abaikan */ }
+    characteristic = null;
+  }
+
+  /* ---------- ESC/POS ---------- */
+  const enc = (s) => {
+    const out = [];
+    for (const ch of String(s)) {
+      const code = ch.codePointAt(0);
+      out.push(code < 256 ? code : 0x3f);
+    }
+    return out;
+  };
+
+  class Buf {
+    constructor() { this.b = []; }
+    raw(...bytes) { this.b.push(...bytes); return this; }
+    text(s) { this.b.push(...enc(s)); return this; }
+    line(s) { return this.text((s == null ? "" : s) + "\n"); }
+    center() { return this.raw(0x1b, 0x61, 1); }
+    left() { return this.raw(0x1b, 0x61, 0); }
+    right() { return this.raw(0x1b, 0x61, 2); }
+    bold(on) { return this.raw(0x1b, 0x45, on ? 1 : 0); }
+    big(on) { return this.raw(0x1d, 0x21, on ? 0x11 : 0x00); }
+    feed(n) { return this.raw(0x1b, 0x64, n); }
+    cut() { return this.raw(0x1d, 0x56, 0x42, 0x00); }
+    hr(width) { return this.line("-".repeat(width)); }
+    cols(l, r, width) {
+      l = String(l); r = String(r);
+      let maxL = width - r.length - 1;
+      if (maxL < 4) maxL = 4;
+      if (l.length > maxL) l = l.slice(0, maxL);
+      return this.line(l + " ".repeat(Math.max(1, width - l.length - r.length)) + r);
+    }
+    wrap(s, width) {
+      const words = String(s).split(/\s+/).filter(Boolean);
+      let cur = "";
+      for (const w of words) {
+        if ((cur + " " + w).trim().length > width) { this.line(cur.trim()); cur = w; }
+        else cur += " " + w;
+      }
+      if (cur.trim()) this.line(cur.trim());
+      return this;
+    }
+    bytes() { return new Uint8Array(this.b); }
+  }
+
+  async function writeChunk(chunk) {
+    if (characteristic.properties.writeWithoutResponse && characteristic.writeValueWithoutResponse)
+      return characteristic.writeValueWithoutResponse(chunk);
+    if (characteristic.writeValue) return characteristic.writeValue(chunk);
+    return characteristic.writeValueWithResponse(chunk);
+  }
+
+  async function send(buf) {
+    await ensure();
+    const data = buf.bytes();
+    for (let i = 0; i < data.length; i += 20) {
+      await writeChunk(data.slice(i, i + 20));
+      await new Promise((r) => setTimeout(r, 8));
+    }
+  }
+
+  async function paperWidth() {
+    try { return (await DB.getSetting("printerPaper", "58")) === "80" ? 48 : 32; }
+    catch (e) { return 32; }
+  }
+
+  const rp = (n) => (window.App && App.rupiah) ? App.rupiah(n) : "Rp" + Number(n || 0).toLocaleString("id-ID");
+
+  async function buildReceipt(data) {
+    const width = await paperWidth();
+    const tx = data.tx, items = data.items || [];
+    const b = new Buf();
+    b.raw(0x1b, 0x40);
+    b.center().bold(true).line(data.storeName || "Saung Ndeso").bold(false);
+    if (data.storeAddr) b.wrap(data.storeAddr, width);
+    if (data.storePhone) b.line(data.storePhone);
+    b.hr(width);
+    b.line(tx.number || "");
+    b.line(window.App && App.fmtDateTime ? App.fmtDateTime(tx.date) : String(tx.date || ""));
+    b.hr(width).left();
+    for (const it of items) {
+      b.wrap(it.productName || it.name || "Item", width);
+      b.cols("  " + it.qty + " x " + rp(it.price), rp(it.subtotal), width);
+    }
+    b.hr(width);
+    b.cols("Subtotal", rp(tx.subtotal), width);
+    if (Number(tx.discount)) b.cols("Diskon", "-" + rp(tx.discount), width);
+    b.bold(true).cols("TOTAL", rp(tx.total), width).bold(false);
+    b.cols("Bayar (" + (tx.paymentMethod || "Tunai") + ")", rp(tx.paid), width);
+    b.cols("Kembali", rp(tx.change), width);
+    b.hr(width).center();
+    b.line("Terima kasih");
+    b.line("Barang yang sudah dibeli");
+    b.line("tidak dapat ditukar");
+    b.feed(3).cut();
+    return b;
+  }
+
+  async function doPrint(data) {
+    if (!supported()) {
+      App.toast("Browser tidak mendukung Bluetooth web — pakai tombol Cetak PDF", false);
+      window.print();
+      return;
+    }
+    try {
+      App.toast("Menghubungkan printer…");
+      const buf = await buildReceipt(data);
+      await send(buf);
+      App.toast("Struk tercetak");
+    } catch (e) {
+      console.error(e);
+      App.toast("Gagal cetak Bluetooth: " + (e.message || e), false);
+    }
+  }
+
+  async function printCurrentReceipt() {
+    const d = window.__lastReceipt;
+    if (!d) { App.toast("Data struk tidak ditemukan", false); return; }
+    return doPrint(d);
+  }
+
+  async function printTx(txId) {
+    try {
+      const tx = await DB.db.transactions.get(txId);
+      if (!tx) throw new Error("Transaksi tidak ditemukan");
+      const items = await DB.db.transaction_items.where("transactionId").equals(txId).toArray();
+      const storeName = await DB.getSetting("storeName", "Saung Ndeso");
+      const storeAddr = await DB.getSetting("storeAddress", "");
+      const storePhone = await DB.getSetting("storePhone", "");
+      return doPrint({ tx, items, storeName, storeAddr, storePhone });
+    } catch (e) {
+      App.toast((e && e.message) || "Gagal memuat transaksi", false);
+    }
+  }
+
+  async function testPrint() {
+    const width = await paperWidth();
+    const b = new Buf();
+    b.raw(0x1b, 0x40).center().bold(true).line("TES CETAK").bold(false);
+    b.line("Saung Ndeso — printer OK");
+    b.line(new Date().toLocaleString("id-ID"));
+    b.hr(width).feed(2).cut();
+    try { await send(b); App.toast("Tes cetak terkirim"); }
+    catch (e) { App.toast("Gagal tes cetak: " + (e.message || e), false); }
+  }
+
+  async function connectWithToast() {
+    try {
+      const d = await connect();
+      App.toast("Printer terhubung: " + (d.name || "OK"));
+      return d;
+    } catch (e) {
+      App.toast("Gagal hubungkan: " + (e.message || e), false);
+      return null;
+    }
+  }
+
+  return { connect, connectWithToast, disconnect, testPrint, printCurrentReceipt, printTx, statusText, savedName, supported };
+})();
+window.PrinterBT = PrinterBT;
 
 </script>
 </body>
